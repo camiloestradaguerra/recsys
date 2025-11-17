@@ -1,0 +1,215 @@
+# =============================================================================
+# Azure DevOps Pipeline - RecSys V3 CI/CD
+# =============================================================================
+# Autor: Equipo ADX
+# Descripción: Pipeline principal para CI/CD del sistema de recomendaciones
+#
+# Este pipeline ejecuta:
+# 1. Tests unitarios y de integración
+# 2. Validación de código (linting)
+# 3. Build de la aplicación
+# 4. Deploy a diferentes ambientes
+# =============================================================================
+
+trigger:
+  branches:
+    include:
+      - master
+      - main
+      - develop
+      - feature/*
+  paths:
+    exclude:
+      - README.md
+      - docs/*
+      - .gitignore
+
+pr:
+  branches:
+    include:
+      - master
+      - main
+      - develop
+
+variables:
+  pythonVersion: '3.11'
+  projectName: 'recsys_v3'
+
+  # Variables de grupo (configurar en Azure DevOps)
+  # Library -> Variable groups -> Create variable group
+  - group: recsys-v3-common
+  - group: recsys-v3-aws-credentials
+
+stages:
+  # ===========================================================================
+  # STAGE 1: Build & Test
+  # ===========================================================================
+  - stage: BuildAndTest
+    displayName: 'Build and Test'
+    jobs:
+      - job: TestJob
+        displayName: 'Run Tests'
+        pool:
+          vmImage: 'ubuntu-latest'
+
+        steps:
+          - task: UsePythonVersion@0
+            displayName: 'Set Python version'
+            inputs:
+              versionSpec: '$(pythonVersion)'
+              addToPath: true
+
+          - script: |
+              python -m pip install --upgrade pip
+              pip install -r requirements.txt
+            displayName: 'Install dependencies'
+
+          - script: |
+              pip install pytest pytest-cov pytest-mock black flake8 mypy
+            displayName: 'Install development dependencies'
+
+          - script: |
+              black --check src/ tests/ entrypoint/
+            displayName: 'Check code formatting (Black)'
+            continueOnError: true
+
+          - script: |
+              flake8 src/ tests/ entrypoint/ --max-line-length=120 --extend-ignore=E203,W503
+            displayName: 'Run linter (Flake8)'
+            continueOnError: true
+
+          - script: |
+              pytest tests/ -v --cov=src --cov-report=xml --cov-report=html --cov-report=term
+            displayName: 'Run unit tests with coverage'
+
+          - task: PublishTestResults@2
+            displayName: 'Publish test results'
+            inputs:
+              testResultsFormat: 'JUnit'
+              testResultsFiles: '**/test-results.xml'
+              failTaskOnFailedTests: true
+            condition: succeededOrFailed()
+
+          - task: PublishCodeCoverageResults@1
+            displayName: 'Publish code coverage'
+            inputs:
+              codeCoverageTool: 'Cobertura'
+              summaryFileLocation: '$(System.DefaultWorkingDirectory)/coverage.xml'
+              reportDirectory: '$(System.DefaultWorkingDirectory)/htmlcov'
+            condition: succeededOrFailed()
+
+  # ===========================================================================
+  # STAGE 2: Security Scan
+  # ===========================================================================
+  - stage: SecurityScan
+    displayName: 'Security Scan'
+    dependsOn: BuildAndTest
+    jobs:
+      - job: SecurityJob
+        displayName: 'Run Security Checks'
+        pool:
+          vmImage: 'ubuntu-latest'
+
+        steps:
+          - task: UsePythonVersion@0
+            inputs:
+              versionSpec: '$(pythonVersion)'
+
+          - script: |
+              pip install safety bandit
+            displayName: 'Install security tools'
+
+          - script: |
+              safety check --json
+            displayName: 'Check dependencies for vulnerabilities (Safety)'
+            continueOnError: true
+
+          - script: |
+              bandit -r src/ entrypoint/ -f json -o bandit-report.json
+            displayName: 'Run security linter (Bandit)'
+            continueOnError: true
+
+          - task: PublishBuildArtifacts@1
+            displayName: 'Publish security reports'
+            inputs:
+              PathtoPublish: '$(System.DefaultWorkingDirectory)'
+              ArtifactName: 'security-reports'
+            condition: succeededOrFailed()
+
+  # ===========================================================================
+  # STAGE 3: Deploy to Development
+  # ===========================================================================
+  - stage: DeployDev
+    displayName: 'Deploy to Development'
+    dependsOn: SecurityScan
+    condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/develop'))
+    variables:
+      - group: recsys-v3-dev
+    jobs:
+      - deployment: DeployDevJob
+        displayName: 'Deploy to Dev Environment'
+        pool:
+          vmImage: 'ubuntu-latest'
+        environment: 'development'
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - task: UsePythonVersion@0
+                  inputs:
+                    versionSpec: '$(pythonVersion)'
+
+                - script: |
+                    python -m pip install --upgrade pip
+                    pip install -r requirements.txt
+                  displayName: 'Install dependencies'
+
+                - script: echo "Deploying to Development Environment"
+                  displayName: 'Deploy application'
+
+                - script: |
+                    # Configurar variables de entorno
+                    export STORAGE_MODE=s3
+                    export ENVIRONMENT=development
+                    # Iniciar aplicación con uvicorn
+                    nohup uvicorn entrypoint.main:app --host 0.0.0.0 --port 8001 &
+                  displayName: 'Start FastAPI application'
+
+  # ===========================================================================
+  # STAGE 4: Deploy to Production
+  # ===========================================================================
+  - stage: DeployProd
+    displayName: 'Deploy to Production'
+    dependsOn: SecurityScan
+    condition: and(succeeded(), or(eq(variables['Build.SourceBranch'], 'refs/heads/master'), eq(variables['Build.SourceBranch'], 'refs/heads/main')))
+    variables:
+      - group: recsys-v3-prod
+    jobs:
+      - deployment: DeployProdJob
+        displayName: 'Deploy to Production'
+        pool:
+          vmImage: 'ubuntu-latest'
+        environment: 'production'
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - task: UsePythonVersion@0
+                  inputs:
+                    versionSpec: '$(pythonVersion)'
+
+                - script: |
+                    python -m pip install --upgrade pip
+                    pip install -r requirements.txt
+                  displayName: 'Install dependencies'
+
+                - script: echo "Deploying to Production Environment"
+                  displayName: 'Deploy application'
+
+                - script: |
+                    # Configurar variables de entorno
+                    export STORAGE_MODE=s3
+                    export ENVIRONMENT=production
+                    # Iniciar aplicación con uvicorn
+                    nohup uvicorn entrypoint.main:app --host 0.0.0.0 --port 8001 &
+                  displayName: 'Start FastAPI application'

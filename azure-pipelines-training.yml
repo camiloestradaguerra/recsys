@@ -1,0 +1,288 @@
+# =============================================================================
+# Azure DevOps Pipeline - RecSys V3 Model Training
+# =============================================================================
+# Autor: Equipo ADX
+# Descripción: Pipeline para entrenamiento del modelo de recomendaciones
+#
+# Este pipeline:
+# 1. Lee datos desde S3
+# 2. Ejecuta el pipeline de ML completo
+# 3. Guarda modelos y artifacts en S3 con carpetas por fecha
+# 4. Registra el modelo en MLflow
+# 5. Genera reportes de evaluación
+# =============================================================================
+
+# Trigger manual o programado (no en cada commit)
+trigger: none
+
+# Programar ejecución diaria a las 2 AM UTC
+schedules:
+  - cron: "0 2 * * *"
+    displayName: 'Daily model training'
+    branches:
+      include:
+        - master
+        - main
+    always: false  # Solo ejecutar si hay cambios
+
+pr: none
+
+variables:
+  pythonVersion: '3.11'
+  projectName: 'recsys_v3'
+
+  # Variables de grupo (configurar en Azure DevOps)
+  - group: recsys-v3-common
+  - group: recsys-v3-aws-credentials
+  - group: recsys-v3-mlflow
+
+stages:
+  # ===========================================================================
+  # STAGE 1: Setup & Data Validation
+  # ===========================================================================
+  - stage: Setup
+    displayName: 'Setup and Data Validation'
+    jobs:
+      - job: SetupJob
+        displayName: 'Setup Environment'
+        pool:
+          vmImage: 'ubuntu-latest'
+
+        steps:
+          - task: UsePythonVersion@0
+            displayName: 'Set Python version'
+            inputs:
+              versionSpec: '$(pythonVersion)'
+              addToPath: true
+
+          - script: |
+              python -m pip install --upgrade pip
+              pip install -r requirements.txt
+            displayName: 'Install dependencies'
+
+          - task: AWSShellScript@1
+            displayName: 'Configure AWS credentials'
+            inputs:
+              awsCredentials: '$(awsServiceConnection)'  # Service connection name
+              regionName: '$(AWS_REGION)'
+              scriptType: 'inline'
+              inlineScript: |
+                echo "AWS configured successfully"
+                aws s3 ls s3://$(AWS_S3_BUCKET_NAME)/ --recursive | head -10
+
+          - script: |
+              export STORAGE_MODE=s3
+              export AWS_S3_BUCKET_NAME=$(AWS_S3_BUCKET_NAME)
+              export AWS_REGION=$(AWS_REGION)
+              python src/pipelines/data_validation/main.py
+            displayName: 'Run data validation'
+            env:
+              AWS_ACCESS_KEY_ID: $(AWS_ACCESS_KEY_ID)
+              AWS_SECRET_ACCESS_KEY: $(AWS_SECRET_ACCESS_KEY)
+
+          - task: PublishBuildArtifacts@1
+            displayName: 'Publish validation reports'
+            inputs:
+              PathtoPublish: '$(System.DefaultWorkingDirectory)/reports'
+              ArtifactName: 'validation-reports'
+            condition: succeededOrFailed()
+
+  # ===========================================================================
+  # STAGE 2: Model Training
+  # ===========================================================================
+  - stage: Training
+    displayName: 'Model Training'
+    dependsOn: Setup
+    jobs:
+      - job: TrainingJob
+        displayName: 'Train Recommendation Model'
+        pool:
+          vmImage: 'ubuntu-latest'
+        timeoutInMinutes: 120  # 2 horas timeout
+
+        steps:
+          - task: UsePythonVersion@0
+            inputs:
+              versionSpec: '$(pythonVersion)'
+
+          - script: |
+              pip install -r requirements.txt
+            displayName: 'Install dependencies'
+
+          - task: AWSShellScript@1
+            displayName: 'Configure AWS credentials'
+            inputs:
+              awsCredentials: '$(awsServiceConnection)'
+              regionName: '$(AWS_REGION)'
+              scriptType: 'inline'
+              inlineScript: |
+                echo "AWS configured for training"
+
+          - script: |
+              export STORAGE_MODE=s3
+              export AWS_S3_BUCKET_NAME=$(AWS_S3_BUCKET_NAME)
+              export AWS_REGION=$(AWS_REGION)
+              export USE_DATE_FOLDERS=true
+              export DATE_FOLDER_FORMAT="%Y-%m-%d"
+              export MLFLOW_TRACKING_URI=$(MLFLOW_TRACKING_URI)
+              export MLFLOW_EXPERIMENT_NAME=$(MLFLOW_EXPERIMENT_NAME)
+
+              echo "Starting full pipeline..."
+              python src/pipelines/main_pipeline.py
+            displayName: 'Run full ML pipeline'
+            env:
+              AWS_ACCESS_KEY_ID: $(AWS_ACCESS_KEY_ID)
+              AWS_SECRET_ACCESS_KEY: $(AWS_SECRET_ACCESS_KEY)
+
+          - script: |
+              export STORAGE_MODE=s3
+              export AWS_S3_BUCKET_NAME=$(AWS_S3_BUCKET_NAME)
+
+              echo "Current date folder: $(date +%Y-%m-%d)"
+              python -c "
+              from src.utils.s3_manager import get_s3_manager_from_env
+              s3 = get_s3_manager_from_env()
+              files = s3.list_files(prefix='models/$(date +%Y-%m-%d)/')
+              print('Files uploaded today:')
+              for f in files:
+                  print(f'  - {f}')
+              "
+            displayName: 'Verify S3 uploads'
+            env:
+              AWS_ACCESS_KEY_ID: $(AWS_ACCESS_KEY_ID)
+              AWS_SECRET_ACCESS_KEY: $(AWS_SECRET_ACCESS_KEY)
+
+          - task: PublishBuildArtifacts@1
+            displayName: 'Publish training reports'
+            inputs:
+              PathtoPublish: '$(System.DefaultWorkingDirectory)/reports'
+              ArtifactName: 'training-reports'
+            condition: succeededOrFailed()
+
+  # ===========================================================================
+  # STAGE 3: Model Evaluation
+  # ===========================================================================
+  - stage: Evaluation
+    displayName: 'Model Evaluation'
+    dependsOn: Training
+    jobs:
+      - job: EvaluationJob
+        displayName: 'Evaluate Model Performance'
+        pool:
+          vmImage: 'ubuntu-latest'
+
+        steps:
+          - task: UsePythonVersion@0
+            inputs:
+              versionSpec: '$(pythonVersion)'
+
+          - script: |
+              pip install -r requirements.txt
+            displayName: 'Install dependencies'
+
+          - task: AWSShellScript@1
+            displayName: 'Download latest model from S3'
+            inputs:
+              awsCredentials: '$(awsServiceConnection)'
+              regionName: '$(AWS_REGION)'
+              scriptType: 'inline'
+              inlineScript: |
+                TODAY=$(date +%Y-%m-%d)
+                aws s3 cp s3://$(AWS_S3_BUCKET_NAME)/models/$TODAY/dnn_model.pth ./models/
+                aws s3 cp s3://$(AWS_S3_BUCKET_NAME)/models/$TODAY/label_encoders.pkl ./models/
+                aws s3 cp s3://$(AWS_S3_BUCKET_NAME)/models/$TODAY/feature_columns.pkl ./models/
+                aws s3 cp s3://$(AWS_S3_BUCKET_NAME)/models/$TODAY/location_filter.pkl ./models/
+
+          - script: |
+              export STORAGE_MODE=s3
+              python src/pipelines/4-evaluation/main.py \
+                --model_path models/dnn_model.pth \
+                --encoders_path models/label_encoders.pkl \
+                --output_path reports/metrics.json
+            displayName: 'Run model evaluation'
+            env:
+              AWS_ACCESS_KEY_ID: $(AWS_ACCESS_KEY_ID)
+              AWS_SECRET_ACCESS_KEY: $(AWS_SECRET_ACCESS_KEY)
+
+          - script: |
+              python -c "
+              import json
+              with open('reports/metrics.json', 'r') as f:
+                  metrics = json.load(f)
+
+              print('\n=== Model Performance Metrics ===')
+              for key, value in metrics.items():
+                  print(f'{key}: {value}')
+
+              # Verificar thresholds
+              if metrics.get('accuracy', 0) < 0.65:
+                  print('WARNING: Accuracy below threshold (0.65)')
+                  exit(1)
+              "
+            displayName: 'Check metrics thresholds'
+
+          - task: PublishBuildArtifacts@1
+            displayName: 'Publish evaluation metrics'
+            inputs:
+              PathtoPublish: '$(System.DefaultWorkingDirectory)/reports'
+              ArtifactName: 'evaluation-metrics'
+
+  # ===========================================================================
+  # STAGE 4: Model Registration
+  # ===========================================================================
+  - stage: Registration
+    displayName: 'Model Registration'
+    dependsOn: Evaluation
+    jobs:
+      - job: RegistrationJob
+        displayName: 'Register Model in MLflow'
+        pool:
+          vmImage: 'ubuntu-latest'
+
+        steps:
+          - task: UsePythonVersion@0
+            inputs:
+              versionSpec: '$(pythonVersion)'
+
+          - script: |
+              pip install -r requirements.txt
+            displayName: 'Install dependencies'
+
+          - script: |
+              export MLFLOW_TRACKING_URI=$(MLFLOW_TRACKING_URI)
+              export MLFLOW_EXPERIMENT_NAME=$(MLFLOW_EXPERIMENT_NAME)
+              export STORAGE_MODE=s3
+
+              python src/pipelines/5-model_registration/main.py \
+                --model_path models/dnn_model.pth \
+                --encoders_path models/label_encoders.pkl \
+                --metrics_path reports/metrics.json \
+                --model_name recsys_dnn
+            displayName: 'Register model in MLflow'
+            env:
+              AWS_ACCESS_KEY_ID: $(AWS_ACCESS_KEY_ID)
+              AWS_SECRET_ACCESS_KEY: $(AWS_SECRET_ACCESS_KEY)
+
+  # ===========================================================================
+  # STAGE 5: Notification
+  # ===========================================================================
+  - stage: Notification
+    displayName: 'Send Notifications'
+    dependsOn:
+      - Training
+      - Evaluation
+      - Registration
+    condition: always()
+    jobs:
+      - job: NotifyJob
+        displayName: 'Send completion notification'
+        pool:
+          vmImage: 'ubuntu-latest'
+
+        steps:
+          - script: |
+              echo "Training pipeline completed"
+              echo "Build ID: $(Build.BuildId)"
+              echo "Build Status: $(Agent.JobStatus)"
+              # Aquí puedes agregar notificaciones por email, Slack, Teams, etc.
+            displayName: 'Log completion status'
