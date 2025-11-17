@@ -465,6 +465,9 @@ def train_model(
     return history
 
 def load_pickle_from_s3(s3_path: str):
+    """
+    Load a pickle file directly from S3.
+    """
     s3 = boto3.client('s3')
     bucket, key = s3_path.replace("s3://", "").split("/", 1)
 
@@ -562,31 +565,24 @@ def run_training_pipeline(
         logger.info(f"Using device: {device}")
         mlflow.log_param("device", str(device))
 
-        # Load data
+        # Load data from S3
         logger.info(f"Loading data from {input_path}")
-
-        # Initialize S3DataManager
         s3_manager = S3DataManager()
-        
-        # Parse S3 input path: s3://bucket/prefix
         s3_path_parts = input_path.replace("s3://", "").split("/", 1)
         bucket_input = s3_path_parts[0]
         prefix = s3_path_parts[1] if len(s3_path_parts) > 1 else ""
-        
-        # Get newest file from S3 with filter for "df_features.parquet"
-        logger.info(f"Buscando archivo más reciente en s3://{bucket_input}/{prefix} con nombre 'df_features'")
+
+        logger.info(f"Searching for newest 'df_features' in s3://{bucket_input}/{prefix}")
         newest_file_path = s3_manager.get_newest_file_by_date(
-            bucket_name=bucket_input, 
+            bucket_name=bucket_input,
             prefix=prefix,
             starts_with="df_features"
         )
-        
         if not newest_file_path:
             raise FileNotFoundError(f"No se encontró archivo 'df_features' en S3: s3://{bucket_input}/{prefix}")
-        
-        # Load data from S3
-        logger.info(f"Cargando datos desde: {newest_file_path}")
+
         df = pd.read_parquet(newest_file_path)
+        logger.info(f"Loaded {len(df)} records with {df.shape[1]} columns")
 
     logger.info(f"Loaded {len(df)} records with {df.shape[1]} columns")
     
@@ -622,8 +618,8 @@ def run_training_pipeline(
     train_dataset = EstablishmentDataset(X_train, y_train)
     val_dataset = EstablishmentDataset(X_val, y_val)
     test_dataset = EstablishmentDataset(X_test, y_test)
-    
     batch_size = config['training']['batch_size']
+
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=0)
     val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=0)
     test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, num_workers=0)
@@ -665,38 +661,44 @@ def run_training_pipeline(
         patience=config['training']['early_stopping_patience'],
         model_path=model_file
     )
-    # Save the best model to S3
-    s3_key = f"{s3_output_prefix}/dnn_model.pth"
-    upload_to_s3(
-        local_path=model_path,
-        bucket=s3_bucket,
-        s3_key=s3_key
-    )
 
-    logger.success(f"Modelo enviado a S3 correctamente: s3://{s3_bucket}/{s3_key}")
+    # Save all artifacts locally + S3
+    model_dir = model_file.parent
+
+    # --- Modelo ---
+    torch.save({'model_state_dict': model.state_dict()}, model_dir / 'dnn_model.pth')
+    s3_model_key = os.path.join(s3_output_prefix, 'dnn_model.pth').replace("\\", "/")
+    upload_to_s3(local_path=str(model_dir / 'dnn_model.pth'), bucket=s3_bucket, s3_key=s3_model_key)
+    logger.success(f"Modelo enviado a S3: s3://{s3_bucket}/{s3_model_key}")
+
+    # --- Feature columns ---
+    feature_cols_path = model_dir / 'feature_columns.pkl'
+    joblib.dump(feature_cols, feature_cols_path)
+    s3_feature_columns_key = os.path.join(s3_output_prefix, 'feature_columns.pkl').replace("\\", "/")
+    upload_to_s3(local_path=str(feature_cols_path), bucket=s3_bucket, s3_key=s3_feature_columns_key)
+    logger.success(f"Feature columns enviadas a S3: s3://{s3_bucket}/{s3_feature_columns_key}")
+
+    # --- Training history ---
+    history_path = model_dir / 'training_history.pkl'
+    joblib.dump(history, history_path)
+    s3_history_key = os.path.join(s3_output_prefix, 'training_history.pkl').replace("\\", "/")
+    upload_to_s3(local_path=str(history_path), bucket=s3_bucket, s3_key=s3_history_key)
+    logger.success(f"Training history enviado a S3: s3://{s3_bucket}/{s3_history_key}")
+
+    # --- LocationTimeFilter ---
+    location_filter = LocationTimeFilter.from_dataframe(df)
+    location_filter_path = model_dir / 'location_filter.pkl'
+    joblib.dump(location_filter, location_filter_path)
+    s3_location_filter_key = os.path.join(s3_output_prefix, 'location_filter.pkl').replace("\\", "/")
+    upload_to_s3(local_path=str(location_filter_path), bucket=s3_bucket, s3_key=s3_location_filter_key)
+    logger.success(f"Location filter enviado a S3: s3://{s3_bucket}/{s3_location_filter_key}")    
+
 
     # Evaluate on test set
     logger.info("Evaluating on test set...")
     model.load_state_dict(torch.load(model_file)['model_state_dict'])
     test_loss, test_acc = evaluate(model, test_loader, criterion, device)
     logger.success(f"Test Loss: {test_loss:.4f} - Test Acc: {test_acc:.4f}")
-    
-    # Save training history
-    history_path = model_file.parent / 'training_history.pkl'
-    joblib.dump(history, history_path)
-    logger.info(f"Training history saved to {history_path}")
-    
-    # Save feature columns
-    feature_cols_path = model_file.parent / 'feature_columns.pkl'
-    joblib.dump(feature_cols, feature_cols_path)
-    logger.info(f"Feature columns saved to {feature_cols_path}")
-    
-    # Create and save LocationTimeFilter
-    logger.info("Creating location-time filter...")
-    location_filter = LocationTimeFilter.from_dataframe(df)
-    filter_path = model_file.parent / 'location_filter.pkl'
-    joblib.dump(location_filter, filter_path)
-    logger.success(f"Location filter saved to {filter_path}")
     
     logger.success("Training pipeline completed successfully!")
 

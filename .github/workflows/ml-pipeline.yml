@@ -281,9 +281,8 @@ jobs:
             --encoders_path "s3://dcelip-dev-artifacts-s3/mlops/model_artifacts/encoder_features.pkl" \
             --config_path "src/pipelines/3-training/config.yaml" \
             --s3_bucket "dcelip-dev-artifacts-s3" \
-            --s3_output_prefix "mlops/models_artifacts/dnn_model.pth"
-
-          
+            --s3_output_prefix "mlops/model_artifacts"         
+             
       - name: Clean up Docker
         if: always()
         run: |
