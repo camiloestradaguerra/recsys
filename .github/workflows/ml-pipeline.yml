@@ -171,17 +171,15 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Download features
-        uses: actions/download-artifact@v4
-        with:
-          name: features
-          path: s3://dcelip-dev-artifacts-s3/mlops/features/features.parquet
+      - name: Download features from S3
+        run: |
+          mkdir -p data/features
+          aws s3 cp s3://dcelip-dev-artifacts-s3/mlops/features/features.parquet data/features/features.parquet
 
-      - name: Download encoders
-        uses: actions/download-artifact@v4
-        with:
-          name: encoders_features
-          path: s3://dcelip-dev-artifacts-s3/mlops/encoder_features.pkl
+      - name: Download encoders from S3
+        run: |
+          mkdir -p data/encoders
+          aws s3 cp s3://dcelip-dev-artifacts-s3/mlops/model_artifacts/encoder_features.pkl data/encoders/encoder_features.pkl
 
       - name: Set up Python
         uses: actions/setup-python@v5
