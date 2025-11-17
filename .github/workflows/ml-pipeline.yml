@@ -275,9 +275,9 @@ jobs:
         env:
           MLFLOW_TRACKING_URI: http://localhost:5555
         run: |
-          python src/pipelines/3-training/main.py `                                                                           
+          python src/pipelines/3-training/main.py \                                                                           
            --input_path "s3://dcelip-dev-artifacts-s3/mlops/features/" \
-           --model_path models/dnn_model.pth `
+           --model_path models/dnn_model.pth \
            --encoders_path "s3://dcelip-dev-artifacts-s3/mlops/model_artifacts/encoder_features.pkl" \
            --config_path src/pipelines/3-training/config.yaml \
            --s3_bucket "dcelip-dev-artifacts-s3" \
