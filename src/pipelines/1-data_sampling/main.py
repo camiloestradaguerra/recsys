@@ -360,7 +360,6 @@ def run_sampling_pipeline(
         # Save sampled data to S3 with timestamp
         s3_manager.save_dataframe_to_s3(df_sampled, bucket_output, path_destino, nombre_archivo)
     else:
-        # Local file saving
         # Save sampled data
         save_data(df_sampled, output_file)
 

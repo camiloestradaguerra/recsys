@@ -144,7 +144,7 @@ jobs:
           python src/pipelines/2-feature_engineering/main.py \
             --input_path "s3://dcelip-dev-artifacts-s3/mlops/input/processed/" \
             --output_path "s3://dcelip-dev-artifacts-s3/mlops/features/features.parquet" \
-            --encoders_path "s3://dcelip-dev-artifacts-s3/mlops/encoders_features.pkl"
+            --encoders_path "s3://dcelip-dev-artifacts-s3/mlops/encoder_features.pkl"
 
       - name: Ensure AWS CLI
         run: |

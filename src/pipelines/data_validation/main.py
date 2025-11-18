@@ -381,7 +381,7 @@ def main():
         logger.info(f"Bucket detectado: {bucket_input}")
         logger.info(f"Prefix detectado: {prefix_input}")
 
-        # Buscar archivo que empiece por df_features
+        # Search for a file that starts with 'df_features'
         logger.info(f"Buscando archivo más reciente en s3://{bucket_input}/{prefix_input} con inicio 'df_features'")
         
         newest_file_path = s3_manager.get_newest_file_by_date(
@@ -404,14 +404,14 @@ def main():
         )
 
     else:
-        # Carga local
+        # Local load
         logger.info(f"Loading data from local path: {args.input_path}")
         df = pd.read_parquet(args.input_path)
 
     logger.info(f"Loaded {len(df)} records and {len(df.columns)} columns")
 
     # --------------------------
-    # VALIDACIONES
+    # VALIDATIONS
     # --------------------------
     missing = validate_missing_values(df)
     dtypes = validate_data_types(df)
@@ -419,7 +419,7 @@ def main():
     outliers = detect_outliers(df)
 
     # --------------------------
-    # GUARDAR REPORTE
+    # SAVE REPORT
     # --------------------------
     html_content = generate_report_html(df, missing, dtypes, distributions, outliers)
 

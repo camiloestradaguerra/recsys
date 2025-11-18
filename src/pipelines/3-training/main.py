@@ -187,7 +187,6 @@ def prepare_data(
     logger.info("Preparing data splits...")
 
     # Extract features and target
-    # Convert nullable pandas types to standard numpy types to avoid object dtype
     X = df[feature_cols].astype('float32').values
     y = df[target_col].astype('int64').values
     

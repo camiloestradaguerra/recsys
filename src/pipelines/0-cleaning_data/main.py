@@ -1,10 +1,13 @@
 """
-Pipeline de preprocesamiento de datos para sistema de recomendación.
+Data preprocessing pipeline for the recommendation system.
 
-Este módulo proporciona herramientas para:
-- Gestión de operaciones S3 (lectura/escritura de DataFrames)
-- Preprocesamiento de datos (limpieza, filtrado, normalización)
-- Orquestación del pipeline mediante CLI
+This module provides utilities for:
+- Managing S3 operations (reading/writing DataFrames)
+- Data preprocessing (cleaning, filtering, normalization)
+- Orchestrating the pipeline via a CLI
+
+Author: Equipo ADX
+Date: 2025-11-13
 """
 import os
 import re
@@ -19,7 +22,7 @@ from dotenv import load_dotenv
 from typing import Optional, Tuple
 
 # ============================================================
-#                  CONSTANTES Y CONFIGURACIÓN
+#                  CONSTANTS AND CONFIGURATION
 # ============================================================
 LOG_FILE_PATH = Path("logs/pipeline.log")
 LOG_ROTATION = "1 day"
@@ -27,7 +30,7 @@ LOG_RETENTION = "7 days"
 DICT_ESTABLISHMENTS_FILE = "diccionario_establecimientos.txt"
 
 # ============================================================
-#                  CONFIGURACIÓN DEL LOGGER
+#                  LOGGER CONFIGURATION
 # ============================================================
 logger.remove()
 logger.add(
@@ -51,25 +54,25 @@ load_dotenv()
 #                    S3 DATA MANAGER
 # ------------------------------------------------------------
 class S3DataManager:
-    """Gestor de operaciones S3 para lectura/escritura de DataFrames.
-    
-    Maneja autenticación AWS, inicialización de conexiones S3,
-    y operaciones de carga/guardado de archivos parquet.
+    """S3 operations manager for reading/writing DataFrames.
+
+    Handles AWS authentication, S3 connection initialization,
+    and reading/writing parquet files.
     """
     
     def __init__(self) -> None:
-        """Inicializa el gestor S3 cargando credenciales y conectando a AWS."""
+        """Initialize the S3 manager by loading credentials and connecting to AWS."""
         self.fs: Optional[s3fs.S3FileSystem] = None
         self._load_env_credentials()
         self._init_s3()
 
     def _load_env_credentials(self) -> None:
-        """Carga credenciales AWS desde .env o variables del sistema.
-        
+        """Load AWS credentials from .env or environment variables.
+
         Raises
         ------
         ValueError
-            Si faltan variables de entorno AWS requeridas.
+            If required AWS environment variables are missing.
         """
         load_dotenv()
         self.aws_access_key = os.getenv('AWS_ACCESS_KEY_ID')
@@ -89,7 +92,7 @@ class S3DataManager:
         logger.info("Credenciales AWS cargadas correctamente.")
 
     def _init_s3(self) -> None:
-        """Inicializa cliente boto3 y S3FileSystem."""
+        """Initialize boto3 client and S3FileSystem."""
         boto3.client(
             's3',
             aws_access_key_id=self.aws_access_key,
@@ -104,21 +107,21 @@ class S3DataManager:
         logger.info("Conexión S3 inicializada correctamente.")
 
     def load_dataframe_from_s3(self, bucket: str, prefix: str, limit: Optional[int] = None) -> pd.DataFrame:
-        """Carga y concatena archivos Parquet desde S3 con un prefijo.
-        
+        """Load and concatenate Parquet files from S3 under a prefix.
+
         Parameters
         ----------
         bucket : str
-            Nombre del bucket S3
+            Name of the S3 bucket
         prefix : str
-            Prefijo de la ruta en S3
+            Prefix path within the bucket
         limit : Optional[int]
-            Número máximo de archivos a cargar (default: None = cargar todos)
-            
+            Maximum number of files to load (default: None = load all)
+
         Returns
         -------
         pd.DataFrame
-            DataFrame concatenado con todos los parquets encontrados
+            Concatenated DataFrame containing all found parquet files
         """
         path_s3 = f"{bucket}/{prefix}"
         
@@ -153,17 +156,17 @@ class S3DataManager:
         return df_concat
     
     def load_single_parquet(self, s3_uri: str) -> pd.DataFrame:
-        """Carga un único archivo parquet desde un S3 URI exacto.
-        
+        """Load a single parquet file from an exact S3 URI.
+
         Parameters
         ----------
         s3_uri : str
-            URI completo del archivo S3 (ej: 's3://bucket/path/file.parquet')
-            
+            Full S3 URI of the file (e.g. 's3://bucket/path/file.parquet')
+
         Returns
         -------
         pd.DataFrame
-            DataFrame con contenido del archivo parquet
+            DataFrame with the content of the parquet file
         """
         df = pd.read_parquet(
             s3_uri,
@@ -175,23 +178,23 @@ class S3DataManager:
         return df
 
     def save_dataframe_to_s3(self, df: pd.DataFrame, bucket: str, path_destino: str, nombre_archivo: str) -> None:
-        """Guarda un DataFrame en S3 con timestamp automático.
-        
+        """Save a DataFrame to S3 with an automatic timestamp appended to the filename.
+
         Parameters
         ----------
         df : pd.DataFrame
-            DataFrame a guardar
+            DataFrame to save
         bucket : str
-            Nombre del bucket S3
+            S3 bucket name
         path_destino : str
-            Ruta destino en S3 (ej: 'mlops/input/processed/')
+            Destination path in S3 (e.g. 'mlops/input/processed/')
         nombre_archivo : str
-            Nombre del archivo con extensión (ej: 'data.parquet')
-            
+            Filename including extension (e.g. 'data.parquet')
+
         Raises
         ------
         Exception
-            Si hay error durante la escritura en S3
+            If an error occurs during writing to S3
         """
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         base, ext = nombre_archivo.split(".")
@@ -208,26 +211,27 @@ class S3DataManager:
             raise
     
     def get_newest_file_by_date(self, bucket_name: str, prefix: str = "", starts_with: str = "") -> str:
-        """Retorna la ruta del archivo más reciente dentro de un prefijo S3.
-        
+        """Return the S3 path of the newest file under a given prefix.
+
         Parameters
         ----------
         bucket_name : str
-            Nombre del bucket S3
+            S3 bucket name
         prefix : str
-            Prefijo de búsqueda en S3 (default: '')
+            Search prefix within the bucket (default: '')
         starts_with : str
-            Filtrar por archivos que comiencen con este string (default: '')
-            
+            Filter for files that start with this string (default: '')
+
         Returns
         -------
         str
-            Ruta S3 del archivo más reciente (formato: 's3://bucket/key')
-            
+            S3 URI of the newest file (format: 's3://bucket/key')
+
         Notes
         -----
-        Busca fechas en formato YYYY-MM-DD, YYYYMMDD o YYYYMMDD_HHMMSS en el nombre.
-        Si no encuentra fecha en el nombre, usa LastModified como fallback.
+        Attempts to extract dates from filenames in formats like YYYY-MM-DD,
+        YYYYMMDD or YYYYMMDD_HHMMSS. If no date is found in filenames, falls
+        back to using the object's LastModified timestamp.
         """
         logger.info(f"Buscando archivo más reciente en s3://{bucket_name}/{prefix} con inicio '{starts_with}'")
 
@@ -255,12 +259,12 @@ class S3DataManager:
                 total_checked += 1
                 key = obj["Key"]
 
-                # Filtrar por el comienzo del nombre si se indica
+                # Filter by the beginning of the name if specified
                 filename = key.split("/")[-1]
                 if starts_with and not filename.startswith(starts_with):
                     continue
 
-                # 1) intentar extraer fecha del nombre
+                # Extract date from the name
                 m = re.search(date_pattern, key)
                 if m:
                     date_part = m.group(1).replace("_", "-")
@@ -286,7 +290,7 @@ class S3DataManager:
                             newest_date = parsed
                             newest_file = key
 
-                # fallback por LastModified
+                # Fallback by LastModified
                 lm = obj.get("LastModified")
                 if lm:
                     if (fallback_date is None) or (lm > fallback_date):
@@ -310,20 +314,20 @@ class S3DataManager:
         return None
 
 class DataPreprocessingPipeline:
-    """Pipeline de preprocesamiento de datos para el sistema de recomendación.
+    """Data preprocessing pipeline for the recommendation system.
 
-    Buenas prácticas aplicadas:
-    - Uso de `logger` en lugar de `print`.
-    - Inicialización sin dependencias externas (lazy loading de credenciales).
-    - Docstrings en métodos y manejo robusto de excepciones.
-    - Type hints para parámetros y retornos.
+    Best practices applied:
+    - Use `logger` instead of `print`.
+    - Lazy loading of credentials to avoid unnecessary dependencies at init.
+    - Docstrings for methods and robust exception handling.
+    - Type hints for parameters and return values.
     """
 
     def __init__(self) -> None:
-        """Inicializa la pipeline sin validar credenciales AWS.
-        
-        Las credenciales se validan solo cuando se necesiten (en métodos que accedan a S3).
-        Esto permite usar la pipeline con datos locales sin requerir credenciales AWS.
+        """Initialize the pipeline without validating AWS credentials.
+
+        Credentials are validated only when needed (in methods that access S3),
+        allowing the pipeline to run with local data without AWS credentials.
         """
         logger.info("DataPreprocessingPipeline inicializada.")
 
@@ -333,7 +337,7 @@ class DataPreprocessingPipeline:
 
         try:
             
-            # --- Limpieza socios ---
+            # --- Members cleaning ---
             df_socios = df_socios[['Id_Persona', 'ESTADO_CIVIL', 'Edad', 'GENERO', 'ROL',
                                 'Antiguedad_Socio_Unico', 'SEGMENTO_COMERCIAL', 'Ciudad',
                                 'Zona', 'Region']].copy()
@@ -346,11 +350,11 @@ class DataPreprocessingPipeline:
                 moda = df_socios[col].mode(dropna=True)[0]
                 df_socios[col] = df_socios[col].fillna(moda)
 
-            # --- Limpieza establecimientos ---
+            # --- Establishments cleaning ---
             df_establecimientos = df_establecimientos[['ID_ESTABLECIMIENTO', 'CADENA', 'ESTABLECIMIENTO']].copy()
             df_establecimientos['ID_ESTABLECIMIENTO'] = pd.to_numeric(df_establecimientos['ID_ESTABLECIMIENTO'], errors="coerce")
 
-            # --- Limpieza entrenamiento ---
+            # --- Training data cleaning ---
             df_entrenamiento = df_entrenamiento[['DiaID', 'Id_Persona', 'ID_ESTABLECIMIENTO',
                                                 'ESPECIALIDAD', 'HORA_INICIO', 'HORA_FIN',
                                                 'LOCALIZACION_EXTERNA', 'MONTO', 'Neteo_Mensual', 'Neteo_Diario']].copy()
@@ -382,14 +386,14 @@ class DataPreprocessingPipeline:
             logger.exception("Error durante data_extended: %s", e)
             raise
         finally:
-            # Se podría medir duración o liberar memoria intermedia
+
             pass
 
     def clean_recent_text_columns(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Normaliza y limpia columnas de texto del DataFrame.
+        """Normalize and clean recent text columns in the DataFrame.
 
-        - Pasa a minúsculas, elimina saltos de línea, caracteres no alfabéticos y números sueltos.
-        - Convierte columnas específicas a tipos apropiados.
+        - Convert text to lowercase, remove line breaks, non-alphabetic characters, and stray numbers.
+        - Convert specific columns to appropriate data types.
         """
 
         logger.info("Limpiando columnas de texto recientes. Columnas iniciales: {}".format(df.shape[1]))
@@ -433,9 +437,9 @@ class DataPreprocessingPipeline:
             raise
     
     def outliers_filters(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Aplica filtros heurísticos para reducir outliers y ciudades poco representadas.
+        """Apply heuristic filters to reduce outliers and underrepresented cities.
 
-        Retorna un DataFrame filtrado.
+        Returns a filtered DataFrame.
         """
 
         logger.info("Aplicando filtros de outliers...")
@@ -464,29 +468,29 @@ class DataPreprocessingPipeline:
             raise
 
     def normalization_establecimientos(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Normaliza nombres de establecimientos usando un diccionario local.
-        
-        Operaciones:
-        1. Carga diccionario desde 'diccionario_establecimientos.txt'
-        2. Mapea nombres de establecimientos usando el diccionario
-        3. Filtra establecimientos poco representados (count < 7)
-        
+        """Normalize establishment names using a local mapping file.
+
+        Operations performed:
+        1. Load mapping dictionary from 'diccionario_establecimientos.txt'
+        2. Map establishment names using the dictionary
+        3. Filter out low-representation establishments (count < 7)
+
         Parameters
         ----------
         df : pd.DataFrame
-            DataFrame con columna 'establecimiento' a normalizar.
-            
+            DataFrame containing the 'establecimiento' column to normalize.
+
         Returns
         -------
         pd.DataFrame
-            DataFrame con establecimientos normalizados y filtrados.
-            
+            DataFrame with normalized and filtered establishment names.
+
         Raises
         ------
         FileNotFoundError
-            Si no existe 'diccionario_establecimientos.txt'.
+            If 'diccionario_establecimientos.txt' does not exist.
         Exception
-            Si ocurre un error durante la normalización.
+            If an error occurs during normalization.
         """
         logger.info("Normalizando nombres de establecimientos...")
 
@@ -498,7 +502,7 @@ class DataPreprocessingPipeline:
                 logger.error("No se encontró 'diccionario_establecimientos.txt' en: %s", dict_path.resolve())
                 raise FileNotFoundError(f"diccionario_establecimientos.txt no existe en: {dict_path.resolve()}")
 
-            # Cargar diccionario desde archivo
+            # Load dictionary from file
             with dict_path.open("r", encoding="utf-8") as f:
                 for linea in f:
                     if ":" in linea:
@@ -507,11 +511,11 @@ class DataPreprocessingPipeline:
             
             logger.info("Diccionario cargado: {} entradas".format(len(diccionario_establecimientos)))
 
-            # Normalizar establecimientos
+            # Normalize establishments
             df['establecimiento'] = df['establecimiento'].astype(str).str.strip().str.lower()
             df['establecimiento'] = df['establecimiento'].map(diccionario_establecimientos).fillna(df['establecimiento'])
 
-            # Filtrar establecimientos poco representados
+            # Filter underrepresented establishments
             df_establecimiento = df['establecimiento'].value_counts(ascending=False).reset_index()
             filtro_establecimiento = df_establecimiento[df_establecimiento['count'] < 7]['establecimiento'].unique()
             df_filtrado = df[~df['establecimiento'].isin(filtro_establecimiento)]
@@ -531,12 +535,12 @@ class DataPreprocessingPipeline:
 # ============================================================
 
 def _validate_aws_credentials() -> None:
-    """Valida que las credenciales AWS estén disponibles en el entorno.
-    
+    """Validate that AWS credentials are available in the environment.
+
     Raises
     ------
     EnvironmentError
-        Si faltan AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY o AWS_DEFAULT_REGION.
+        If AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY or AWS_DEFAULT_REGION are missing.
     """
     load_dotenv()
     required_vars = ['AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_DEFAULT_REGION']
@@ -550,12 +554,12 @@ def _validate_aws_credentials() -> None:
 
 
 def _load_raw_data_from_s3() -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    """Carga datos raw desde S3 y los concatena.
-    
+    """Load raw data from S3 and concatenate the resulting DataFrames.
+
     Returns
     -------
     Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]
-        (df_socios, df_establecimientos, df_entrenamiento) concatenados.
+        (df_socios, df_establecimientos, df_entrenamiento) concatenated.
         
     Raises
     ------
@@ -572,14 +576,14 @@ def _load_raw_data_from_s3() -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     bucket_output = os.getenv('BUCKET_OUTPUT', 'dcelip-dev-artifacts-s3')
     path_raw = os.getenv('PATH_RAW', 'mlops/input/raw/')
     
-    # Definir prefijos de entrada
+    # Define input prefixes
     prefixes = {
         'socios': 'source=teradata/type=socios/year=2025/month=11/day=5/',
         'establecimientos': 'source=teradata/type=establecimientos/year=2025/month=11/day=5/',
         'entrenamiento': 'source=teradata/type=cao_entrenamiento/year=2025/month=11/day=7/'
     }
     
-    # Cargar y concatenar cada tipo de dato
+    # Load and concatenate each data type
     df_socios = s3.load_dataframe_from_s3(bucket=bucket_input, prefix=prefixes['socios'])
     df_establecimientos = s3.load_dataframe_from_s3(bucket=bucket_input, prefix=prefixes['establecimientos'])
     df_entrenamiento = s3.load_dataframe_from_s3(bucket=bucket_input, prefix=prefixes['entrenamiento'])
@@ -587,7 +591,7 @@ def _load_raw_data_from_s3() -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     logger.info("Datos cargados - socios: {} | establecimientos: {} | entrenamiento: {}".format(
         df_socios.shape, df_establecimientos.shape, df_entrenamiento.shape))
     
-    # Guardar datos concatenados en bucket de artifacts
+    # Save concatenated data in artifacts bucket
     logger.info("Guardando datos concatenados en S3...")
     s3.save_dataframe_to_s3(df_socios, bucket_output, path_raw, 'df_socios.parquet')
     s3.save_dataframe_to_s3(df_establecimientos, bucket_output, path_raw, 'df_establecimientos.parquet')
@@ -647,15 +651,15 @@ def run_preprocessing(output_path: str) -> None:
     logger.info("=" * 60)
     
     try:
-        # Validar credenciales AWS (siempre se necesitan para cargar datos raw)
+        # Validate AWS credentials (required to load raw data)
         logger.info("Validando credenciales AWS...")
         _validate_aws_credentials()
         
-        # Paso 1: Cargar datos raw desde S3
+        # Step 1: Load raw data from S3
         logger.info("\n[PASO 1/4] Cargando datos raw desde S3...")
         df_socios, df_establecimientos, df_entrenamiento = _load_raw_data_from_s3()
         
-        # Paso 2: Construir dataset extendido
+        # Step 2: Build extended dataset
         logger.info("\n[PASO 2/4] Construyendo dataset extendido...")
         pipeline = DataPreprocessingPipeline()
         df_extendida = pipeline.data_extended(
@@ -665,7 +669,7 @@ def run_preprocessing(output_path: str) -> None:
         )
         logger.info("Dataset extendido creado: {}".format(df_extendida.shape))
         
-        # Paso 3: Aplicar transformaciones de preprocesamiento
+        # Step 3: Apply preprocessing transformations
         logger.info("\n[PASO 3/4] Aplicando transformaciones de preprocesamiento...")
         
         df_clean1 = pipeline.clean_recent_text_columns(df_extendida)
@@ -677,11 +681,11 @@ def run_preprocessing(output_path: str) -> None:
         df_clean3 = pipeline.normalization_establecimientos(df_clean2)
         logger.info("  ✓ Normalización de establecimientos completada: {}".format(df_clean3.shape))
         
-        # Paso 4: Guardar resultado
+         # Step 4: Save result
         logger.info("\n[PASO 4/4] Guardando resultado...")
         
         if str(output_path).startswith('s3://'):
-            # Parsear S3 URI
+            # Parse S3 URI
             uri = output_path.replace('s3://', '')
             parts = uri.split('/')
             bucket = parts[0]
@@ -697,7 +701,7 @@ def run_preprocessing(output_path: str) -> None:
             )
             logger.success("Datos limpios guardados en S3: {}".format(output_path))
         else:
-            # Guardar localmente
+            # Save locally
             outp = Path(output_path)
             outp.parent.mkdir(parents=True, exist_ok=True)
             df_clean3.to_parquet(outp, index=False)
