@@ -52,7 +52,7 @@ jobs:
 
       - name: Ejecutar pipeline S3 (cleaning)
         run: |
-          echo "▶️ Iniciando ejecución del script..."
+          echo "Iniciando ejecución del script..."
           python src/pipelines/0-cleaning_data/main.py --output_path s3://dcelip-dev-artifacts-s3/mlops/input/processed/df_extendida_clean.parquet
           echo "El script finalizó correctamente"
 
@@ -368,7 +368,7 @@ jobs:
           path: metrics.json
           retention-days: 30
 
-    # ============================================================================ 
+  # ============================================================================ 
   # JOB 6: Model Registration
   # Depends on: model-evaluation
   # Only runs en cualquier push
@@ -410,3 +410,37 @@ jobs:
             --feature_cols_path "s3://dcelip-dev-artifacts-s3/mlops/model_artifacts/feature_columns.pkl" \
             --metrics_path "s3://dcelip-dev-artifacts-s3/mlops/evaluation_results/metrics.json" \
             --model_name "recsys-v3-${{ github.ref_name }}"
+
+  # ============================================================================
+  # JOB 7: Cleanup
+  # Always runs after pipeline completes
+  # ============================================================================
+  cleanup:
+    name: Cleanup Old Runs
+    needs: [setup, data-sampling, feature-engineering, data-validation, model-training, model-evaluation, model-registration]
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Cleanup old workflow runs
+        uses: Mattraks/delete-workflow-runs@v2
+        with:
+          token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          retain_days: 30
+          keep_minimum_runs: 10
+        continue-on-error: true   # <-- Ignora errores
+
+      - name: Cleanup old artifacts
+        uses: c-hive/gha-remove-artifacts@v1
+        with:
+          age: '7 days'
+          skip-recent: 5
+        continue-on-error: true   # <-- Ignora errores
+
+      - name: Post cleanup summary
+        run: |
+          echo "### Cleanup Summary" >> $GITHUB_STEP_SUMMARY || true
+          echo "- Removed workflow runs older than 30 days" >> $GITHUB_STEP_SUMMARY || true
+          echo "- Removed artifacts older than 7 days" >> $GITHUB_STEP_SUMMARY || true
+          echo "- Kept minimum of 10 recent runs" >> $GITHUB_STEP_SUMMARY || true
+          echo "- Kept 5 most recent artifacts" >> $GITHUB_STEP_SUMMARY || true
