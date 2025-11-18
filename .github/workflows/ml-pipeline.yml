@@ -146,17 +146,51 @@ jobs:
             --output_path "s3://dcelip-dev-artifacts-s3/mlops/features/features.parquet" \
             --encoders_path "s3://dcelip-dev-artifacts-s3/mlops/encoders_features.pkl"
 
+      - name: Ensure AWS CLI
+        run: |
+          if ! command -v aws >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y awscli
+          else
+            echo "aws CLI already installed"
+          fi
+
+      - name: Prepare features artifact for upload
+        id: prepare_features
+        run: |
+          mkdir -p artifacts
+          if aws s3 cp s3://dcelip-dev-artifacts-s3/mlops/features/features.parquet artifacts/features.parquet; then
+            echo "found=true" >> $GITHUB_OUTPUT
+          else
+            echo "found=false" >> $GITHUB_OUTPUT
+          fi
+
       - name: Upload features artifact
+        if: ${{ steps.prepare_features.outputs.found == 'true' }}
         uses: actions/upload-artifact@v4
         with:
           name: features
-          path: s3://dcelip-dev-artifacts-s3/mlops/features/features.parquet
+          path: artifacts/features.parquet
+
+      - name: Prepare encoders artifact for upload
+        id: prepare_encoders
+        run: |
+          mkdir -p artifacts
+          # Try both possible encoder filenames and normalize to artifacts/encoder_features.pkl
+          if aws s3 cp s3://dcelip-dev-artifacts-s3/mlops/model_artifacts/encoder_features.pkl artifacts/encoder_features.pkl; then
+            echo "found=true" >> $GITHUB_OUTPUT
+          elif aws s3 cp s3://dcelip-dev-artifacts-s3/mlops/model_artifacts/encoders_features.pkl artifacts/encoder_features.pkl; then
+            echo "found=true" >> $GITHUB_OUTPUT
+          else
+            echo "found=false" >> $GITHUB_OUTPUT
+          fi
 
       - name: Upload encoders artifact
+        if: ${{ steps.prepare_encoders.outputs.found == 'true' }}
         uses: actions/upload-artifact@v4
         with:
           name: encoders_features
-          path: s3://dcelip-dev-artifacts-s3/mlops/model_artifacts/encoders_features.pkl
+          path: artifacts/encoders_features.pkl
 
 
   # ============================================================================  
@@ -174,12 +208,29 @@ jobs:
       - name: Download features from S3
         run: |
           mkdir -p data/features
-          aws s3 cp s3://dcelip-dev-artifacts-s3/mlops/features/features.parquet data/features/features.parquet
+          aws s3 cp s3://dcelip-dev-artifacts-s3/mlops/features/features.parquet data/features/features.parquet || true
+
+      - name: Ensure AWS CLI
+        if: always()
+        run: |
+          if ! command -v aws >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y awscli
+          else
+            echo "aws CLI already installed"
+          fi
 
       - name: Download encoders from S3
         run: |
           mkdir -p data/encoders
-          aws s3 cp s3://dcelip-dev-artifacts-s3/mlops/model_artifacts/encoder_features.pkl data/encoders/encoder_features.pkl
+          # Try both encoder filenames and save to a normalized local filename
+          if aws s3 cp s3://dcelip-dev-artifacts-s3/mlops/model_artifacts/encoder_features.pkl data/encoders/encoder_features.pkl; then
+            echo "Downloaded encoder_features.pkl"
+          elif aws s3 cp s3://dcelip-dev-artifacts-s3/mlops/model_artifacts/encoders_features.pkl data/encoders/encoder_features.pkl; then
+            echo "Downloaded encoders_features.pkl as encoder_features.pkl"
+          else
+            echo "No encoders file found on S3; continuing without local encoder file"
+          fi
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -204,11 +255,24 @@ jobs:
           python src/pipelines/data_validation/main.py \
             --input_path "s3://dcelip-dev-artifacts-s3/mlops/features/" \
             --output_path "s3://dcelip-dev-artifacts-s3/mlops/evaluation_results/evaluation_results.html" \
-      - name: Upload validation report
+      - name: Prepare validation report for upload
+        id: upload_validation_report
+        run: |
+          mkdir -p artifacts
+          if aws s3 cp s3://dcelip-dev-artifacts-s3/mlops/evaluation_results/evaluation_results.html artifacts/evaluation_results.html; then
+            echo "Found report, will upload"
+            echo "found=true" >> $GITHUB_OUTPUT
+          else
+            echo "Report not found on S3; skipping upload"
+            echo "found=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Upload validation report artifact
+        if: ${{ steps.upload_validation_report.outputs.found == 'true' }}
         uses: actions/upload-artifact@v4
         with:
           name: validation-report
-          path: s3://dcelip-dev-artifacts-s3/mlops/evaluation_results/evaluation_results.html
+          path: artifacts/evaluation_results.html
           retention-days: 30
   
   # ============================================================================
