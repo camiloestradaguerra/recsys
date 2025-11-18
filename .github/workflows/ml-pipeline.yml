@@ -179,7 +179,7 @@ jobs:
           # Try both possible encoder filenames and normalize to artifacts/encoder_features.pkl
           if aws s3 cp s3://dcelip-dev-artifacts-s3/mlops/model_artifacts/encoder_features.pkl artifacts/encoder_features.pkl; then
             echo "found=true" >> $GITHUB_OUTPUT
-          elif aws s3 cp s3://dcelip-dev-artifacts-s3/mlops/model_artifacts/encoders_features.pkl artifacts/encoder_features.pkl; then
+          elif aws s3 cp s3://dcelip-dev-artifacts-s3/mlops/model_artifacts/encoder_features.pkl artifacts/encoder_features.pkl; then
             echo "found=true" >> $GITHUB_OUTPUT
           else
             echo "found=false" >> $GITHUB_OUTPUT
@@ -189,8 +189,8 @@ jobs:
         if: ${{ steps.prepare_encoders.outputs.found == 'true' }}
         uses: actions/upload-artifact@v4
         with:
-          name: encoders_features
-          path: artifacts/encoders_features.pkl
+          name: encoder_features
+          path: artifacts/encoder_features.pkl
 
 
   # ============================================================================  
@@ -226,8 +226,8 @@ jobs:
           # Try both encoder filenames and save to a normalized local filename
           if aws s3 cp s3://dcelip-dev-artifacts-s3/mlops/model_artifacts/encoder_features.pkl data/encoders/encoder_features.pkl; then
             echo "Downloaded encoder_features.pkl"
-          elif aws s3 cp s3://dcelip-dev-artifacts-s3/mlops/model_artifacts/encoders_features.pkl data/encoders/encoder_features.pkl; then
-            echo "Downloaded encoders_features.pkl as encoder_features.pkl"
+          elif aws s3 cp s3://dcelip-dev-artifacts-s3/mlops/model_artifacts/encoder_features.pkl data/encoders/encoder_features.pkl; then
+            echo "Downloaded encoder_features.pkl as encoder_features.pkl"
           else
             echo "No encoders file found on S3; continuing without local encoder file"
           fi
