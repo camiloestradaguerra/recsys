@@ -1,15 +1,10 @@
-name: Model Registration Pipeline
+name: Model Registration Only
 
 on:
-  workflow_dispatch:
-    inputs:
-      version_tag:
-        description: "Modelo version tag (ej: v1.0.0)"
-        required: true
-
   push:
-    tags:
-      - 'v*.*.*'
+    branches:
+      - "**"        # Se ejecuta en cualquier push a cualquier rama
+  workflow_dispatch:  # Permite ejecutarlo manualmente
 
 env:
   PYTHON_VERSION: '3.12'
@@ -18,45 +13,48 @@ env:
   AWS_DEFAULT_REGION: ${{ secrets.AWS_DEFAULT_REGION }}
 
 jobs:
+
   model-registration:
-    name: Model Registration (Standalone)
+    name: Model Registration
     runs-on: ubuntu-latest
+    if: always()   # se ejecuta SIEMPRE incluso si algo arriba falla
 
     steps:
-      # ------------------------
-      # 1. DESCARGAR REPO
-      # ------------------------
-      - name: Download repository
-        uses: actions/download-artifact@v4
-        with:
-          name: repository
+      # ---------------------------------------
+      # 1. Descargar el repositorio
+      # ---------------------------------------
+      - name: Checkout repo
+        uses: actions/checkout@v4
 
-      # ------------------------
-      # 2. DESCARGAR MODELO
-      # ------------------------
-      - name: Download model
+      # ---------------------------------------
+      # 2. Descargar modelo entrenado
+      # ---------------------------------------
+      - name: Download trained model
         uses: actions/download-artifact@v4
         with:
           name: trained-model
           path: models
 
-      # ------------------------
-      # 3. DESCARGAR ENCODERS + FEATURE_COLS
-      # ------------------------
-      - name: Download encoders and features
+      # ---------------------------------------
+      # 3. Descargar encoders y columnas del modelo
+      # ---------------------------------------
+      - name: Download encoders & feature columns
         uses: actions/download-artifact@v4
         with:
           name: model-artifacts
           path: models
 
-      # ------------------------
-      # 4. PYTHON
-      # ------------------------
+      # ---------------------------------------
+      # 4. Instalar Python
+      # ---------------------------------------
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
+      # ---------------------------------------
+      # 5. Cache de dependencias
+      # ---------------------------------------
       - name: Cache pip dependencies
         uses: actions/cache@v4
         with:
@@ -65,15 +63,18 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-pip-
 
+      # ---------------------------------------
+      # 6. Instalar dependencias
+      # ---------------------------------------
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      # ------------------------
-      # 5. REGISTRAR MODELO + SUBIR A S3 + MLFLOW
-      # ------------------------
-      - name: Register model in MLflow and upload to S3
+      # ---------------------------------------
+      # 7. Registrar el modelo en MLflow y subir a S3
+      # ---------------------------------------
+      - name: Register model in MLflow
         env:
           GITHUB_SHA: ${{ github.sha }}
           GITHUB_REF_NAME: ${{ github.ref_name }}
@@ -83,19 +84,19 @@ jobs:
             --model_path models/dnn_model.pth \
             --encoders_path models/label_encoders.pkl \
             --feature_cols_path models/feature_columns.pkl \
-            --metrics_path "s3://dcelip-dev-artifacts-s3/mlops/evaluation_results/metrics.json" \
-            --model_name "recsys-v3-${{ github.ref_name }}"
+            --metrics_path s3://dcelip-dev-artifacts-s3/mlops/evaluation_results/metrics.json \
+            --model_name recsys-v3-${{ github.ref_name }}
 
-      # ------------------------
-      # 6. SUBIR ARTIFACTOS DE PRODUCCIÓN
-      # ------------------------
+      # ---------------------------------------
+      # 8. Subir artefactos finales
+      # ---------------------------------------
       - name: Upload production artifacts
         uses: actions/upload-artifact@v4
         with:
           name: production-model-${{ github.ref_name }}
-          path: |
-            models/
+          path: models/
           retention-days: 90
+
 
 
 # name: MLOps Pipeline CI/CD
