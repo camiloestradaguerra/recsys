@@ -15,46 +15,20 @@ env:
 jobs:
 
   model-registration:
-    name: Model Registration
+    name: Model Registration (Step 6/6)
     runs-on: ubuntu-latest
-    if: always()   # se ejecuta SIEMPRE incluso si algo arriba falla
-
+    if: github.event_name == 'push'
     steps:
-      # ---------------------------------------
-      # 1. Descargar el repositorio
-      # ---------------------------------------
-      - name: Checkout repo
-        uses: actions/checkout@v4
-
-      # ---------------------------------------
-      # 2. Descargar modelo entrenado
-      # ---------------------------------------
-      - name: Download trained model
+      - name: Download repository
         uses: actions/download-artifact@v4
         with:
-          name: trained-model
-          path: models
+          name: repository
 
-      # ---------------------------------------
-      # 3. Descargar encoders y columnas del modelo
-      # ---------------------------------------
-      - name: Download encoders & feature columns
-        uses: actions/download-artifact@v4
-        with:
-          name: model-artifacts
-          path: models
-
-      # ---------------------------------------
-      # 4. Instalar Python
-      # ---------------------------------------
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
-      # ---------------------------------------
-      # 5. Cache de dependencias
-      # ---------------------------------------
       - name: Cache pip dependencies
         uses: actions/cache@v4
         with:
@@ -63,39 +37,27 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-pip-
 
-      # ---------------------------------------
-      # 6. Instalar dependencias
-      # ---------------------------------------
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      # ---------------------------------------
-      # 7. Registrar el modelo en MLflow y subir a S3
-      # ---------------------------------------
-      - name: Register model in MLflow
+      - name: Register model in MLflow and upload to S3
         env:
           GITHUB_SHA: ${{ github.sha }}
           GITHUB_REF_NAME: ${{ github.ref_name }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: us-east-1
           MLFLOW_TRACKING_URI: ${{ secrets.MLFLOW_TRACKING_URI }}
         run: |
           python src/pipelines/5-model_registration/main.py \
-            --model_path models/dnn_model.pth \
-            --encoders_path models/label_encoders.pkl \
-            --feature_cols_path models/feature_columns.pkl \
-            --metrics_path s3://dcelip-dev-artifacts-s3/mlops/evaluation_results/metrics.json \
-            --model_name recsys-v3-${{ github.ref_name }}
+            --model_path "s3://dcelip-dev-artifacts-s3/mlops/model_artifacts/dnn_model.pth" \
+            --encoders_path "s3://dcelip-dev-artifacts-s3/mlops/model_artifacts/encoder_features.pkl" \
+            --feature_cols_path "s3://dcelip-dev-artifacts-s3/mlops/model_artifacts/feature_columns.pkl" \
+            --metrics_path "s3://dcelip-dev-artifacts-s3/mlops/evaluation_results/metrics.json" \
+            --model_name "recsys-v3-${{ github.ref_name }}"
 
-      # ---------------------------------------
-      # 8. Subir artefactos finales
-      # ---------------------------------------
-      - name: Upload production artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: production-model-${{ github.ref_name }}
-          path: models/
-          retention-days: 90
 
 
 
