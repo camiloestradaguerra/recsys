@@ -19,11 +19,6 @@ jobs:
     runs-on: ubuntu-latest
     if: github.event_name == 'push'
     steps:
-      - name: Download repository
-        uses: actions/download-artifact@v4
-        with:
-          name: repository
-
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -57,6 +52,7 @@ jobs:
             --feature_cols_path "s3://dcelip-dev-artifacts-s3/mlops/model_artifacts/feature_columns.pkl" \
             --metrics_path "s3://dcelip-dev-artifacts-s3/mlops/evaluation_results/metrics.json" \
             --model_name "recsys-v3-${{ github.ref_name }}"
+
 
 
 
