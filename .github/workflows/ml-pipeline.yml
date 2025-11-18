@@ -1,18 +1,15 @@
-name: MLOps Pipeline CI/CD
+name: Model Registration Pipeline
 
 on:
   workflow_dispatch:
     inputs:
-      run_all:
-        description: 'Run complete pipeline'
-        required: false
-        default: 'true'
+      version_tag:
+        description: "Modelo version tag (ej: v1.0.0)"
+        required: true
+
   push:
-    branches: [master, main]
     tags:
       - 'v*.*.*'
-  pull_request:
-    branches: [master, main]
 
 env:
   PYTHON_VERSION: '3.12'
@@ -21,381 +18,40 @@ env:
   AWS_DEFAULT_REGION: ${{ secrets.AWS_DEFAULT_REGION }}
 
 jobs:
-  # ============================================================================
-  # JOB 0: Setup & Unit Tests and Data Cleaning
-  # ============================================================================
-  setup:
-    name: Setup & Unit Tests
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
-
-      - name: Verificar credenciales cargadas
-        run: |
-          if [ -z "$AWS_ACCESS_KEY_ID" ] || [ -z "$AWS_SECRET_ACCESS_KEY" ] || [ -z "$AWS_DEFAULT_REGION" ]; then
-            echo "ERROR: Falta una o más variables de credenciales AWS"
-            exit 1
-          else
-            echo "Credenciales AWS presentes en el entorno del pipeline"
-          fi
-
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r src/pipelines/0-cleaning_data/requirements.txt
-
-      - name: Ejecutar pipeline S3 (cleaning)
-        run: |
-          echo "▶️ Iniciando ejecución del script..."
-          python src/pipelines/0-cleaning_data/main.py --output_path s3://dcelip-dev-artifacts-s3/mlops/input/processed/df_extendida_clean.parquet
-          echo "El script finalizó correctamente"
-
-      - name: Upload repository
-        uses: actions/upload-artifact@v4
-        with:
-          name: repository
-          path: |
-            .
-            !.git
-            !.venv
-            !__pycache__
-            !*.pyc
-          retention-days: 1
-
-  # ============================================================================
-  # JOB 1: Data Sampling
-  # Depends on: setup
-  # ============================================================================
-  data-sampling:
-    name: Data Sampling (Step 1/6)
-    runs-on: ubuntu-latest
-    needs: setup
-    if: github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
-
-      - name: Cache pip dependencies
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-${{ hashFiles('src/pipelines/1-data_sampling/requirements.txt') }}
-          restore-keys: |
-            ${{ runner.os }}-pip-
-
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r src/pipelines/1-data_sampling/requirements.txt
-          pip install -r src/pipelines/0-cleaning_data/requirements.txt
-
-      - name: Run data sampling pipeline
-        run: |
-          python src/pipelines/1-data_sampling/main.py \
-            --input_path "s3://dcelip-dev-artifacts-s3/mlops/input/processed/" \
-            --output_path "s3://dcelip-dev-artifacts-s3/mlops/input/processed/" \
-            --sample_size 2000 \
-            --random_state 42
-
-  # ============================================================================  
-  # JOB 2: Feature Engineering  
-  # Depends on: data-sampling  
-  # ============================================================================
-  feature-engineering:
-    name: Feature Engineering (Step 2/6)
-    runs-on: ubuntu-latest
-    needs: data-sampling
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
-
-      - name: Cache pip dependencies
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-${{ hashFiles('src/pipelines/2-feature_engineering/requirements.txt') }}
-          restore-keys: |
-            ${{ runner.os }}-pip-
-
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r src/pipelines/2-feature_engineering/requirements.txt
-          pip install -r src/pipelines/0-cleaning_data/requirements.txt
-
-      - name: Run feature engineering
-        run: |
-          python src/pipelines/2-feature_engineering/main.py \
-            --input_path "s3://dcelip-dev-artifacts-s3/mlops/input/processed/" \
-            --output_path "s3://dcelip-dev-artifacts-s3/mlops/features/features.parquet" \
-            --encoders_path "s3://dcelip-dev-artifacts-s3/mlops/encoders_features.pkl"
-
-      - name: Upload features artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: features
-          path: s3://dcelip-dev-artifacts-s3/mlops/features/features.parquet
-
-      - name: Upload encoders artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: encoders_features
-          path: s3://dcelip-dev-artifacts-s3/mlops/model_artifacts/encoders_features.pkl
-
-
-  # ============================================================================  
-  # JOB 3: Data Validation  
-  # Depends on: feature-engineering  
-  # ============================================================================
-  data-validation:
-    name: Data Validation (Step 3/6)
-    runs-on: ubuntu-latest
-    needs: feature-engineering
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Download features from S3
-        run: |
-          mkdir -p data/features
-          aws s3 cp s3://dcelip-dev-artifacts-s3/mlops/features/features.parquet data/features/features.parquet
-
-      - name: Download encoders from S3
-        run: |
-          mkdir -p data/encoders
-          aws s3 cp s3://dcelip-dev-artifacts-s3/mlops/model_artifacts/encoder_features.pkl data/encoders/encoder_features.pkl
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
-
-      - name: Cache pip dependencies
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
-          restore-keys: |
-            ${{ runner.os }}-pip-
-
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-
-      - name: Run data validation
-        run: |
-          python src/pipelines/data_validation/main.py \
-            --input_path "s3://dcelip-dev-artifacts-s3/mlops/features/" \
-            --output_path "s3://dcelip-dev-artifacts-s3/mlops/evaluation_results/evaluation_results.html" \
-      - name: Upload validation report
-        uses: actions/upload-artifact@v4
-        with:
-          name: validation-report
-          path: s3://dcelip-dev-artifacts-s3/mlops/evaluation_results/evaluation_results.html
-          retention-days: 30
-  
-  # ============================================================================
-  # JOB 4: Model Training
-  # Depends on: data-validation
-  # ============================================================================
-  model-training:
-    name: Model Training (Step 4/6)
-    runs-on: ubuntu-latest
-    needs: data-validation
-    steps:
-      - name: Download repository
-        uses: actions/download-artifact@v4
-        with:
-          name: repository
-
-      # Reemplazo del artifact GitHub → Descarga desde S3
-      - name: Descargar encoders desde S3
-        run: |
-          echo "Descargando encoders desde S3..."
-          aws s3 cp s3://dcelip-dev-artifacts-s3/mlops/model_artifacts/encoder_features.pkl ./encoder_features.pkl
-          ls -lh ./encoder_features.pkl
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
-
-      - name: Cache pip dependencies
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
-          restore-keys: |
-            ${{ runner.os }}-pip-
-
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-
-      - name: Docker Setup - MLflow
-        run: |
-          docker pull ghcr.io/mlflow/mlflow:latest
-          docker run -d -p 5555:5000 --name mlflow-server \
-            ghcr.io/mlflow/mlflow:latest \
-            mlflow server --host 0.0.0.0 \
-            --backend-store-uri sqlite:///mlflow.db \
-            --default-artifact-root /tmp/mlruns
-
-      - name: Wait for MLflow to be ready
-        run: |
-          echo "Waiting for MLflow server..."
-          for i in {1..30}; do
-            if curl -f http://localhost:5555/health 2>/dev/null; then
-              echo "MLflow is ready!"
-              break
-            fi
-            echo "Attempt $i/30: MLflow not ready yet..."
-            sleep 2
-          done
-
-      - name: Run model training
-        env:
-          MLFLOW_TRACKING_URI: http://localhost:5555
-        run: |
-          python src/pipelines/3-training/main.py \
-            --input_path "s3://dcelip-dev-artifacts-s3/mlops/features/" \
-            --model_path "models/dnn_model.pth" \
-            --encoders_path "s3://dcelip-dev-artifacts-s3/mlops/model_artifacts/encoder_features.pkl" \
-            --config_path "src/pipelines/3-training/config.yaml" \
-            --s3_bucket "dcelip-dev-artifacts-s3" \
-            --s3_output_prefix "mlops/model_artifacts"         
-             
-      - name: Clean up Docker
-        if: always()
-        run: |
-          docker stop mlflow-server || true
-          docker rm mlflow-server || true
-
-      - name: Upload trained model
-        uses: actions/upload-artifact@v4
-        with:
-          name: trained-model
-          path: models/
-          retention-days: 1
-
-  # ============================================================================
-  # JOB 5: Model Evaluation
-  # Depends on: model-training
-  # ============================================================================
-  model-evaluation:
-    name: Model Evaluation (Step 5/6)
-    runs-on: ubuntu-latest
-    needs: model-training
-
-    steps:
-      - name: Download repository
-        uses: actions/download-artifact@v4
-        with:
-          name: repository
-
-      # -----------------------------------------
-      # Python environment
-      # -----------------------------------------
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
-
-      - name: Cache pip dependencies
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
-          restore-keys: |
-            ${{ runner.os }}-pip-
-
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-
-      # -----------------------------------------
-      # AWS credentials already configured
-      # (tú ya tienes este bloque en un job previo)
-      # -----------------------------------------
-      # NO LO REPITO, según lo que me dijiste
-      # -----------------------------------------
-
-      # -----------------------------------------
-      # Run model evaluation using S3 paths
-      # -----------------------------------------
-      - name: Run model evaluation
-        run: |
-          python src/pipelines/4-evaluation/main.py \
-            --model_path "s3://dcelip-dev-artifacts-s3/mlops/model_artifacts/dnn_model.pth" \
-            --data_path "s3://dcelip-dev-artifacts-s3/mlops/features/" \
-            --encoders_path "s3://dcelip-dev-artifacts-s3/mlops/model_artifacts/encoder_features.pkl" \
-            --feature_cols_path "s3://dcelip-dev-artifacts-s3/mlops/model_artifacts/feature_columns.pkl" \
-            --output_path "s3://dcelip-dev-artifacts-s3/mlops/evaluation_results/"
-
-      # -----------------------------------------
-      # Upload metrics.json from S3 (optional)
-      # SOLO si quieres que aparezca en GitHub Artifacts
-      # -----------------------------------------
-      - name: Download metrics.json from S3 for artifact upload
-        run: |
-          aws s3 cp \
-            "s3://dcelip-dev-artifacts-s3/mlops/evaluation_results/metrics.json" \
-            metrics.json
-
-      - name: Upload evaluation metrics
-        uses: actions/upload-artifact@v4
-        with:
-          name: evaluation-metrics
-          path: metrics.json
-          retention-days: 30
-
-  # ============================================================================
-  # JOB 6: Model Registration
-  # Depends on: model-evaluation
-  # Only runs on version tags (v*.*.*)
-  # ============================================================================
   model-registration:
-    name: Model Registration (Step 6/6)
+    name: Model Registration (Standalone)
     runs-on: ubuntu-latest
-    needs: model-evaluation
-    if: startsWith(github.ref, 'refs/tags/v')
+
     steps:
+      # ------------------------
+      # 1. DESCARGAR REPO
+      # ------------------------
       - name: Download repository
         uses: actions/download-artifact@v4
         with:
           name: repository
 
+      # ------------------------
+      # 2. DESCARGAR MODELO
+      # ------------------------
       - name: Download model
         uses: actions/download-artifact@v4
         with:
           name: trained-model
           path: models
 
+      # ------------------------
+      # 3. DESCARGAR ENCODERS + FEATURE_COLS
+      # ------------------------
       - name: Download encoders and features
         uses: actions/download-artifact@v4
         with:
           name: model-artifacts
           path: models
 
+      # ------------------------
+      # 4. PYTHON
+      # ------------------------
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -414,26 +70,470 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+      # ------------------------
+      # 5. REGISTRAR MODELO + SUBIR A S3 + MLFLOW
+      # ------------------------
       - name: Register model in MLflow and upload to S3
         env:
           GITHUB_SHA: ${{ github.sha }}
           GITHUB_REF_NAME: ${{ github.ref_name }}
-          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          AWS_DEFAULT_REGION: us-east-1
           MLFLOW_TRACKING_URI: ${{ secrets.MLFLOW_TRACKING_URI }}
         run: |
           python src/pipelines/5-model_registration/main.py \
             --model_path models/dnn_model.pth \
             --encoders_path models/label_encoders.pkl \
             --feature_cols_path models/feature_columns.pkl \
-            --metrics_path s3://dcelip-dev-artifacts-s3/mlops/evaluation_results/metrics.json \
-            --model_name recsys-v3-${{ github.ref_name }}
+            --metrics_path "s3://dcelip-dev-artifacts-s3/mlops/evaluation_results/metrics.json" \
+            --model_name "recsys-v3-${{ github.ref_name }}"
 
+      # ------------------------
+      # 6. SUBIR ARTIFACTOS DE PRODUCCIÓN
+      # ------------------------
       - name: Upload production artifacts
         uses: actions/upload-artifact@v4
         with:
           name: production-model-${{ github.ref_name }}
           path: |
             models/
-          retention-days: 90 
+          retention-days: 90
+
+
+# name: MLOps Pipeline CI/CD
+
+# on:
+#   workflow_dispatch:
+#     inputs:
+#       run_all:
+#         description: 'Run complete pipeline'
+#         required: false
+#         default: 'true'
+#   push:
+#     branches: [master, main]
+#     tags:
+#       - 'v*.*.*'
+#   pull_request:
+#     branches: [master, main]
+
+# env:
+#   PYTHON_VERSION: '3.12'
+#   AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+#   AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+#   AWS_DEFAULT_REGION: ${{ secrets.AWS_DEFAULT_REGION }}
+
+# jobs:
+#   # ============================================================================
+#   # JOB 0: Setup & Unit Tests and Data Cleaning
+#   # ============================================================================
+#   setup:
+#     name: Setup & Unit Tests
+#     runs-on: ubuntu-latest
+#     steps:
+#       - name: Checkout repository
+#         uses: actions/checkout@v4
+
+#       - name: Set up Python
+#         uses: actions/setup-python@v5
+#         with:
+#           python-version: ${{ env.PYTHON_VERSION }}
+
+#       - name: Verificar credenciales cargadas
+#         run: |
+#           if [ -z "$AWS_ACCESS_KEY_ID" ] || [ -z "$AWS_SECRET_ACCESS_KEY" ] || [ -z "$AWS_DEFAULT_REGION" ]; then
+#             echo "ERROR: Falta una o más variables de credenciales AWS"
+#             exit 1
+#           else
+#             echo "Credenciales AWS presentes en el entorno del pipeline"
+#           fi
+
+#       - name: Install dependencies
+#         run: |
+#           python -m pip install --upgrade pip
+#           pip install -r src/pipelines/0-cleaning_data/requirements.txt
+
+#       - name: Ejecutar pipeline S3 (cleaning)
+#         run: |
+#           echo "▶️ Iniciando ejecución del script..."
+#           python src/pipelines/0-cleaning_data/main.py --output_path s3://dcelip-dev-artifacts-s3/mlops/input/processed/df_extendida_clean.parquet
+#           echo "El script finalizó correctamente"
+
+#       - name: Upload repository
+#         uses: actions/upload-artifact@v4
+#         with:
+#           name: repository
+#           path: |
+#             .
+#             !.git
+#             !.venv
+#             !__pycache__
+#             !*.pyc
+#           retention-days: 1
+
+#   # ============================================================================
+#   # JOB 1: Data Sampling
+#   # Depends on: setup
+#   # ============================================================================
+#   data-sampling:
+#     name: Data Sampling (Step 1/6)
+#     runs-on: ubuntu-latest
+#     needs: setup
+#     if: github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
+#     steps:
+#       - name: Checkout repository
+#         uses: actions/checkout@v4
+
+#       - name: Set up Python
+#         uses: actions/setup-python@v5
+#         with:
+#           python-version: ${{ env.PYTHON_VERSION }}
+
+#       - name: Cache pip dependencies
+#         uses: actions/cache@v4
+#         with:
+#           path: ~/.cache/pip
+#           key: ${{ runner.os }}-pip-${{ hashFiles('src/pipelines/1-data_sampling/requirements.txt') }}
+#           restore-keys: |
+#             ${{ runner.os }}-pip-
+
+#       - name: Install dependencies
+#         run: |
+#           python -m pip install --upgrade pip
+#           pip install -r src/pipelines/1-data_sampling/requirements.txt
+#           pip install -r src/pipelines/0-cleaning_data/requirements.txt
+
+#       - name: Run data sampling pipeline
+#         run: |
+#           python src/pipelines/1-data_sampling/main.py \
+#             --input_path "s3://dcelip-dev-artifacts-s3/mlops/input/processed/" \
+#             --output_path "s3://dcelip-dev-artifacts-s3/mlops/input/processed/" \
+#             --sample_size 2000 \
+#             --random_state 42
+
+#   # ============================================================================  
+#   # JOB 2: Feature Engineering  
+#   # Depends on: data-sampling  
+#   # ============================================================================
+#   feature-engineering:
+#     name: Feature Engineering (Step 2/6)
+#     runs-on: ubuntu-latest
+#     needs: data-sampling
+#     steps:
+#       - name: Checkout repository
+#         uses: actions/checkout@v4
+
+#       - name: Set up Python
+#         uses: actions/setup-python@v5
+#         with:
+#           python-version: ${{ env.PYTHON_VERSION }}
+
+#       - name: Cache pip dependencies
+#         uses: actions/cache@v4
+#         with:
+#           path: ~/.cache/pip
+#           key: ${{ runner.os }}-pip-${{ hashFiles('src/pipelines/2-feature_engineering/requirements.txt') }}
+#           restore-keys: |
+#             ${{ runner.os }}-pip-
+
+#       - name: Install dependencies
+#         run: |
+#           python -m pip install --upgrade pip
+#           pip install -r src/pipelines/2-feature_engineering/requirements.txt
+#           pip install -r src/pipelines/0-cleaning_data/requirements.txt
+
+#       - name: Run feature engineering
+#         run: |
+#           python src/pipelines/2-feature_engineering/main.py \
+#             --input_path "s3://dcelip-dev-artifacts-s3/mlops/input/processed/" \
+#             --output_path "s3://dcelip-dev-artifacts-s3/mlops/features/features.parquet" \
+#             --encoders_path "s3://dcelip-dev-artifacts-s3/mlops/encoders_features.pkl"
+
+#       - name: Upload features artifact
+#         uses: actions/upload-artifact@v4
+#         with:
+#           name: features
+#           path: s3://dcelip-dev-artifacts-s3/mlops/features/features.parquet
+
+#       - name: Upload encoders artifact
+#         uses: actions/upload-artifact@v4
+#         with:
+#           name: encoders_features
+#           path: s3://dcelip-dev-artifacts-s3/mlops/model_artifacts/encoders_features.pkl
+
+
+#   # ============================================================================  
+#   # JOB 3: Data Validation  
+#   # Depends on: feature-engineering  
+#   # ============================================================================
+#   data-validation:
+#     name: Data Validation (Step 3/6)
+#     runs-on: ubuntu-latest
+#     needs: feature-engineering
+#     steps:
+#       - name: Checkout repository
+#         uses: actions/checkout@v4
+
+#       - name: Download features from S3
+#         run: |
+#           mkdir -p data/features
+#           aws s3 cp s3://dcelip-dev-artifacts-s3/mlops/features/features.parquet data/features/features.parquet
+
+#       - name: Download encoders from S3
+#         run: |
+#           mkdir -p data/encoders
+#           aws s3 cp s3://dcelip-dev-artifacts-s3/mlops/model_artifacts/encoder_features.pkl data/encoders/encoder_features.pkl
+
+#       - name: Set up Python
+#         uses: actions/setup-python@v5
+#         with:
+#           python-version: ${{ env.PYTHON_VERSION }}
+
+#       - name: Cache pip dependencies
+#         uses: actions/cache@v4
+#         with:
+#           path: ~/.cache/pip
+#           key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+#           restore-keys: |
+#             ${{ runner.os }}-pip-
+
+#       - name: Install dependencies
+#         run: |
+#           python -m pip install --upgrade pip
+#           pip install -r requirements.txt
+
+#       - name: Run data validation
+#         run: |
+#           python src/pipelines/data_validation/main.py \
+#             --input_path "s3://dcelip-dev-artifacts-s3/mlops/features/" \
+#             --output_path "s3://dcelip-dev-artifacts-s3/mlops/evaluation_results/evaluation_results.html" \
+#       - name: Upload validation report
+#         uses: actions/upload-artifact@v4
+#         with:
+#           name: validation-report
+#           path: s3://dcelip-dev-artifacts-s3/mlops/evaluation_results/evaluation_results.html
+#           retention-days: 30
+  
+#   # ============================================================================
+#   # JOB 4: Model Training
+#   # Depends on: data-validation
+#   # ============================================================================
+#   model-training:
+#     name: Model Training (Step 4/6)
+#     runs-on: ubuntu-latest
+#     needs: data-validation
+#     steps:
+#       - name: Download repository
+#         uses: actions/download-artifact@v4
+#         with:
+#           name: repository
+
+#       # Reemplazo del artifact GitHub → Descarga desde S3
+#       - name: Descargar encoders desde S3
+#         run: |
+#           echo "Descargando encoders desde S3..."
+#           aws s3 cp s3://dcelip-dev-artifacts-s3/mlops/model_artifacts/encoder_features.pkl ./encoder_features.pkl
+#           ls -lh ./encoder_features.pkl
+
+#       - name: Set up Python
+#         uses: actions/setup-python@v5
+#         with:
+#           python-version: ${{ env.PYTHON_VERSION }}
+
+#       - name: Cache pip dependencies
+#         uses: actions/cache@v4
+#         with:
+#           path: ~/.cache/pip
+#           key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+#           restore-keys: |
+#             ${{ runner.os }}-pip-
+
+#       - name: Install dependencies
+#         run: |
+#           python -m pip install --upgrade pip
+#           pip install -r requirements.txt
+
+#       - name: Docker Setup - MLflow
+#         run: |
+#           docker pull ghcr.io/mlflow/mlflow:latest
+#           docker run -d -p 5555:5000 --name mlflow-server \
+#             ghcr.io/mlflow/mlflow:latest \
+#             mlflow server --host 0.0.0.0 \
+#             --backend-store-uri sqlite:///mlflow.db \
+#             --default-artifact-root /tmp/mlruns
+
+#       - name: Wait for MLflow to be ready
+#         run: |
+#           echo "Waiting for MLflow server..."
+#           for i in {1..30}; do
+#             if curl -f http://localhost:5555/health 2>/dev/null; then
+#               echo "MLflow is ready!"
+#               break
+#             fi
+#             echo "Attempt $i/30: MLflow not ready yet..."
+#             sleep 2
+#           done
+
+#       - name: Run model training
+#         env:
+#           MLFLOW_TRACKING_URI: http://localhost:5555
+#         run: |
+#           python src/pipelines/3-training/main.py \
+#             --input_path "s3://dcelip-dev-artifacts-s3/mlops/features/" \
+#             --model_path "models/dnn_model.pth" \
+#             --encoders_path "s3://dcelip-dev-artifacts-s3/mlops/model_artifacts/encoder_features.pkl" \
+#             --config_path "src/pipelines/3-training/config.yaml" \
+#             --s3_bucket "dcelip-dev-artifacts-s3" \
+#             --s3_output_prefix "mlops/model_artifacts"         
+             
+#       - name: Clean up Docker
+#         if: always()
+#         run: |
+#           docker stop mlflow-server || true
+#           docker rm mlflow-server || true
+
+#       - name: Upload trained model
+#         uses: actions/upload-artifact@v4
+#         with:
+#           name: trained-model
+#           path: models/
+#           retention-days: 1
+
+#   # ============================================================================
+#   # JOB 5: Model Evaluation
+#   # Depends on: model-training
+#   # ============================================================================
+#   model-evaluation:
+#     name: Model Evaluation (Step 5/6)
+#     runs-on: ubuntu-latest
+#     needs: model-training
+
+#     steps:
+#       - name: Download repository
+#         uses: actions/download-artifact@v4
+#         with:
+#           name: repository
+
+#       # -----------------------------------------
+#       # Python environment
+#       # -----------------------------------------
+#       - name: Set up Python
+#         uses: actions/setup-python@v5
+#         with:
+#           python-version: ${{ env.PYTHON_VERSION }}
+
+#       - name: Cache pip dependencies
+#         uses: actions/cache@v4
+#         with:
+#           path: ~/.cache/pip
+#           key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+#           restore-keys: |
+#             ${{ runner.os }}-pip-
+
+#       - name: Install dependencies
+#         run: |
+#           python -m pip install --upgrade pip
+#           pip install -r requirements.txt
+
+#       # -----------------------------------------
+#       # AWS credentials already configured
+#       # (tú ya tienes este bloque en un job previo)
+#       # -----------------------------------------
+#       # NO LO REPITO, según lo que me dijiste
+#       # -----------------------------------------
+
+#       # -----------------------------------------
+#       # Run model evaluation using S3 paths
+#       # -----------------------------------------
+#       - name: Run model evaluation
+#         run: |
+#           python src/pipelines/4-evaluation/main.py \
+#             --model_path "s3://dcelip-dev-artifacts-s3/mlops/model_artifacts/dnn_model.pth" \
+#             --data_path "s3://dcelip-dev-artifacts-s3/mlops/features/" \
+#             --encoders_path "s3://dcelip-dev-artifacts-s3/mlops/model_artifacts/encoder_features.pkl" \
+#             --feature_cols_path "s3://dcelip-dev-artifacts-s3/mlops/model_artifacts/feature_columns.pkl" \
+#             --output_path "s3://dcelip-dev-artifacts-s3/mlops/evaluation_results/"
+
+#       # -----------------------------------------
+#       # Upload metrics.json from S3 (optional)
+#       # SOLO si quieres que aparezca en GitHub Artifacts
+#       # -----------------------------------------
+#       - name: Download metrics.json from S3 for artifact upload
+#         run: |
+#           aws s3 cp \
+#             "s3://dcelip-dev-artifacts-s3/mlops/evaluation_results/metrics.json" \
+#             metrics.json
+
+#       - name: Upload evaluation metrics
+#         uses: actions/upload-artifact@v4
+#         with:
+#           name: evaluation-metrics
+#           path: metrics.json
+#           retention-days: 30
+
+#   # ============================================================================
+#   # JOB 6: Model Registration
+#   # Depends on: model-evaluation
+#   # Only runs on version tags (v*.*.*)
+#   # ============================================================================
+#   model-registration:
+#     name: Model Registration (Step 6/6)
+#     runs-on: ubuntu-latest
+#     needs: model-evaluation
+#     if: always()
+#     steps:
+#       - name: Download repository
+#         uses: actions/download-artifact@v4
+#         with:
+#           name: repository
+
+#       - name: Download model
+#         uses: actions/download-artifact@v4
+#         with:
+#           name: trained-model
+#           path: models
+
+#       - name: Download encoders and features
+#         uses: actions/download-artifact@v4
+#         with:
+#           name: model-artifacts
+#           path: models
+
+#       - name: Set up Python
+#         uses: actions/setup-python@v5
+#         with:
+#           python-version: ${{ env.PYTHON_VERSION }}
+
+#       - name: Cache pip dependencies
+#         uses: actions/cache@v4
+#         with:
+#           path: ~/.cache/pip
+#           key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+#           restore-keys: |
+#             ${{ runner.os }}-pip-
+
+#       - name: Install dependencies
+#         run: |
+#           python -m pip install --upgrade pip
+#           pip install -r requirements.txt
+
+#       - name: Register model in MLflow and upload to S3
+#         env:
+#           GITHUB_SHA: ${{ github.sha }}
+#           GITHUB_REF_NAME: ${{ github.ref_name }}
+#           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+#           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+#           AWS_DEFAULT_REGION: us-east-1
+#           MLFLOW_TRACKING_URI: ${{ secrets.MLFLOW_TRACKING_URI }}
+#         run: |
+#           python src/pipelines/5-model_registration/main.py \
+#             --model_path models/dnn_model.pth \
+#             --encoders_path models/label_encoders.pkl \
+#             --feature_cols_path models/feature_columns.pkl \
+#             --metrics_path s3://dcelip-dev-artifacts-s3/mlops/evaluation_results/metrics.json \
+#             --model_name recsys-v3-${{ github.ref_name }}
+
+#       - name: Upload production artifacts
+#         uses: actions/upload-artifact@v4
+#         with:
+#           name: production-model-${{ github.ref_name }}
+#           path: |
+#             models/
+#           retention-days: 90 
